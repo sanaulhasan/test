@@ -1,0 +1,94 @@
+pipeline{
+    agent any
+    tools {
+       terraform 'terraform-14'
+    }
+    triggers {
+        cron('0 0 * * *') 
+        # This trigger is to run pipeline daily at start of day but we can adjust it according to production requirement
+    }
+    parameters {
+        string(name: 'GIT_BRANCH', defaultValue: 'master', description: 'Mention the branch name here')
+        string(name: 'ACCESS_KEY_ID', description: 'Provide aws account access key')
+        string(name: 'SECRET_ACCESS_KEY', description: 'Provide aws account access key secret')
+        string(name: 'ENVIRONEMENT_NAME', description: 'Provide ENV name like Production-1, Dev-1, staging, test')
+        choice(name: 'AWS_REGION', choices: ['us-west-1', 'us-west-2', 'us-east-1', 'us-east-2'], description: 'Select your region')
+        string(name: 'EKS_CLUSTER_NAME', description: 'What is your cluster name?')
+        string(name: 'EKS_VPC_CIDR', defaultValue: '10.0.0.0/16', description: 'Provide VPC cidr.')
+        string(name: 'EKS_NODE_GROUP_NAME', description: 'what group name you want?')
+        string(name: 'EKS_NODE_DESIRED', defaultValue: '2', description: 'what is desired instance count?')
+        string(name: 'EKS_NODE_MAX', defaultValue: '10', description: 'What should be maximum instance count?')
+        string(name: 'EKS_NODE_INSTANCE_TYPE', defaultValue: 'm2.large', description: 'What instance type you want?')
+        
+    }
+
+    stage('Git-Checkout'){
+       steps{
+          echo 'checking out terraform repository...'
+
+          git credentailsId: 'github', url ''    
+          checkout changelog: false, poll: false, scm: [$class: 'GitSCM', branches: [[name: '${GIT_BRANCH}']], extensions: [[$class: 'SubmoduleOption', disableSubmodules: false, parentCredentials: true, recursiveSubmodules: true, reference: '', trackingSubmodules: false], [$class: 'RelativeTargetDirectory', relativeTargetDir: 'terraform-eks']], userRemoteConfigs: [[credentialsId: 'Jenkins-creds-git', url: 'https://github.com/sanaulhasan/repo']]]            
+    }
+     
+    }
+
+    stage('Terraform-init'){
+       steps{
+          echo 'creating terraform env directory to initialize eks infra...'
+          sh label: 'terraform initialization', script:'''
+            export AWS_ACCESS_KEY_ID     =  ACCESS_KEY_ID
+            export AWS_SECRET_ACCESS_KEY =  SECRET_ACCESS_KEY
+
+            cd $WORKSPACE/terraform-eks/terraform/env
+            mkdir $ENVIRONEMENT_NAME
+            cp ./prod/* $ENVIRONEMENT_NAME
+            cd ./$ENVIRONEMENT_NAME
+            terraform init
+     '''
+   }
+   }
+    stage('Terraform-plan'){
+       steps{
+          echo 'creating terraform plan eks infra...'
+          sh label: 'terraform plan', script:'''
+
+            cd $WORKSPACE/terraform-eks/terraform/env/$ENVIRONEMENT_NAME
+            
+            TF_VARS='{aws_regios="$AWS_REGION", cluster-name="$EKS_CLUSTER_NAME", vpc_cidr_block="$KS_VPC_CIDR",    \
+            eks_node_group_name="$EKS_NODE_GROUP_NAME", eks_node_group_scaling_desired_size="$EKS_NODE_DESIRED",    \ eks_node_group_scaling_max_size="$EKS_NODE_MAX", eks_node_group_instace_type="$EKS_NODE_INSTANCE_TYPE", \
+            env="$ENVIRONEMENT_NAME"}'  terraform plan
+     '''     
+ 
+   }
+   }
+    stage('Terraform-apply'){
+       steps{
+          echo 'Provioning eks cluster with required specs...'
+          sh label: 'terraform apply the changes', script:'''
+
+            cd $WORKSPACE/terraform-eks/terraform/env/$ENVIRONEMENT_NAME
+            
+            TF_VARS='{aws_regios="$AWS_REGION", cluster-name="$EKS_CLUSTER_NAME", vpc_cidr_block="$KS_VPC_CIDR",    \
+            eks_node_group_name="$EKS_NODE_GROUP_NAME", eks_node_group_scaling_desired_size="$EKS_NODE_DESIRED",    \ eks_node_group_scaling_max_size="$EKS_NODE_MAX", eks_node_group_instace_type="$EKS_NODE_INSTANCE_TYPE", \
+            env="$ENVIRONEMENT_NAME"}'  terraform apply -auto-approve
+     ''' 
+ 
+   }
+   }
+   post{
+      always{
+           
+            echo 'Clean Workspace'
+            sh label: 'cleaning', script: '''
+            # Run some cleaning commands here
+            echo "All seems well, cleaning up my mess like a good samaritan! Bubye."
+           
+                '''
+        }
+     failure {
+            echo 'Failed to provision infrastructure'
+            }
+     success {
+            echo 'Success - Infrastructure launched successfully..'
+        }      
+}
